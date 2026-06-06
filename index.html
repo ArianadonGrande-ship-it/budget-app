@@ -147,6 +147,10 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+.item-row{display:grid;grid-template-columns:1fr 120px 28px;gap:6px;align-items:center;margin-bottom:6px}
+.item-row input{margin:0}
+.items-wrap{background:var(--surface2);border-radius:var(--r);padding:10px 12px;margin-bottom:12px}
+.items-total{display:flex;justify-content:space-between;align-items:center;padding-top:8px;margin-top:4px;border-top:1px solid var(--border);font-size:13px}
 </style>
 </head>
 <body>
@@ -546,15 +550,25 @@ function txRow(t,cols=6){
     <td><span class="${stC}">${stL}</span></td>
     <td style="text-align:right;white-space:nowrap" class="${t.type==='expense'?'neg':t.type==='saving'?'sav':'pos'}">${t.type==='expense'?'-':'+'}${fmt(t.amount)}</td>
     <td></td></tr>`;
+  const hasItems=t.items&&t.items.length>0;
+  const itemsBtn=hasItems?`<button class="btn btn-sm btn-ghost" onclick="toggleItemDetail('${t.id}')" style="padding:4px 7px;font-size:11px" title="세부 품목 보기">📋 ${t.items.length}품목</button>`:'';
+  const itemsDetail=hasItems?`<tr id="item-detail-${t.id}" style="display:none"><td colspan="8" style="padding:0 11px 10px;background:var(--surface2)">
+    <div style="border-radius:var(--r);overflow:hidden">
+      ${t.items.map(it=>`<div style="display:flex;justify-content:space-between;padding:5px 10px;font-size:12px;border-bottom:1px solid var(--border)">
+        <span style="color:var(--text2)">${it.name}</span>
+        <span style="font-weight:500">${fmt(it.price)}</span>
+      </div>`).join('')}
+    </div>
+  </td></tr>`:'';
   return`<tr>
     <td style="color:var(--text2);white-space:nowrap">${t.date}</td>
-    <td>${t.desc}${instLabel}</td>
+    <td><div>${t.desc}${instLabel}</div>${itemsBtn}</td>
     <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span></td>
     <td>${card?`<span class="card-chip" style="background:${card.color}22;color:${card.color}">${card.name}</span>`:'<span style="color:var(--text3);font-size:11px">-</span>'}</td>
     <td><span class="${stC}">${stL}</span></td>
     <td style="color:var(--text2);font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.memo||'-'}</td>
     <td style="text-align:right;white-space:nowrap" class="${t.type==='expense'?'neg':t.type==='saving'?'sav':'pos'}">${t.type==='expense'?'-':'+'}${fmt(t.amount)}</td>
-    <td style="display:flex;gap:3px;align-items:center">${edit}${del}</td></tr>`;
+    <td style="display:flex;gap:3px;align-items:center">${edit}${del}</td></tr>${itemsDetail}`;
 }
 
 // NAV
@@ -986,9 +1000,20 @@ function renderCategories(){
   document.getElementById('cat-tbody').innerHTML=DB.categories.map(cat=>`<tr>
     <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span></td>
     <td style="color:var(--text2)">${{income:'수입',expense:'지출',saving:'저축'}[cat.type]}</td>
-    <td><div style="width:18px;height:18px;border-radius:50%;background:${cat.color}"></div></td>
+    <td>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:18px;height:18px;border-radius:50%;background:${cat.color}"></div>
+        <div class="pcolor-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:0">
+          ${PASTEL.map(pc=>`<div onclick="changeCatColor('${cat.id}','${pc}')" style="width:14px;height:14px;border-radius:50%;background:${pc};cursor:pointer;border:2px solid ${pc===cat.color?'#333':'transparent'};transition:border .1s"></div>`).join('')}
+        </div>
+      </div>
+    </td>
     <td style="text-align:right"><button class="btn btn-sm btn-danger" onclick="deleteCat('${cat.id}')">✕</button></td>
   </tr>`).join('');
+}
+function changeCatColor(id,color){
+  const cat=DB.categories.find(c=>c.id===id);
+  if(cat){cat.color=color;save();renderCategories();showToast('색상을 변경했습니다');}
 }
 function deleteCat(id){if(!confirm('삭제할까요?'))return;DB.categories=DB.categories.filter(c=>c.id!==id);save();renderCategories();showToast('삭제했습니다');}
 
@@ -1076,6 +1101,23 @@ function openAddModal(){
         <option value="12">12개월</option>
       </select>
     </div>
+    <div id="items-section" style="display:none;margin-bottom:12px">
+      <div class="items-wrap">
+        <div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:8px">세부 품목</div>
+        <div id="items-list"></div>
+        <button class="btn btn-sm btn-ghost" onclick="addItemRow()" style="width:100%;justify-content:center;margin-top:4px">+ 품목 추가</button>
+        <div class="items-total">
+          <span style="color:var(--text2)">합계</span>
+          <span id="items-total-val" style="font-weight:600">₩0</span>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <button class="btn btn-sm btn-ghost" id="toggle-items-btn" onclick="toggleItemsSection()">
+        <span id="toggle-items-icon">＋</span> 세부 품목 입력
+      </button>
+      <span style="font-size:11px;color:var(--text3)">품목 합계가 금액에 자동 반영됩니다</span>
+    </div>
     <div class="fg" style="margin-bottom:16px"><label>메모</label><textarea id="tx-memo" placeholder="메모 (선택)"></textarea></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="closeModal()">취소</button>
@@ -1099,6 +1141,51 @@ function setTxType(el,type){
   if(instRowEl)instRowEl.style.display=hide?'none':'';
 }
 function setSubtype(el,val){el.closest('.subtabs').querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));el.classList.add('active');document.getElementById('tx-subtype').value=val;}
+let itemsOpen = false;
+function toggleItemsSection(){
+  itemsOpen = !itemsOpen;
+  const sec = document.getElementById('items-section');
+  const btn = document.getElementById('toggle-items-btn');
+  const icon = document.getElementById('toggle-items-icon');
+  sec.style.display = itemsOpen ? '' : 'none';
+  icon.textContent = itemsOpen ? '－' : '＋';
+  btn.style.background = itemsOpen ? 'var(--surface3)' : '';
+  if(itemsOpen && document.getElementById('items-list').children.length === 0) addItemRow();
+}
+function addItemRow(){
+  const list = document.getElementById('items-list');
+  const idx = list.children.length;
+  const div = document.createElement('div');
+  div.className = 'item-row';
+  div.dataset.idx = idx;
+  div.innerHTML = `
+    <input type="text" placeholder="품목명" class="item-name" oninput="calcItemsTotal()">
+    <input type="number" placeholder="금액" class="item-price" min="0" step="100" oninput="calcItemsTotal()" style="text-align:right">
+    <button class="btn btn-sm btn-danger" onclick="removeItemRow(this)" style="padding:4px 7px;justify-content:center">✕</button>`;
+  list.appendChild(div);
+  div.querySelector('.item-name').focus();
+}
+function removeItemRow(btn){
+  btn.closest('.item-row').remove();
+  calcItemsTotal();
+}
+function calcItemsTotal(){
+  const prices = [...document.querySelectorAll('.item-price')].map(el=>parseFloat(el.value)||0);
+  const total = prices.reduce((s,v)=>s+v,0);
+  const totalEl = document.getElementById('items-total-val');
+  if(totalEl) totalEl.textContent = '₩'+Math.round(total).toLocaleString('ko-KR');
+  // 금액 필드 자동 반영
+  const amtEl = document.getElementById('tx-amount');
+  if(amtEl && total > 0) amtEl.value = total;
+}
+function getItemsData(){
+  if(!itemsOpen) return [];
+  const rows = [...document.getElementById('items-list').children];
+  return rows.map(r=>({
+    name: r.querySelector('.item-name').value.trim(),
+    price: parseFloat(r.querySelector('.item-price').value)||0
+  })).filter(r=>r.name||r.price);
+}
 function saveTx(){
   const date=document.getElementById('tx-date').value;
   const amount=parseFloat(document.getElementById('tx-amount').value);
@@ -1136,9 +1223,11 @@ function saveTx(){
     }
     showToast(`${installMonths}개월 할부로 저장했습니다 ✓`);
   } else {
-    DB.transactions.push({id:Date.now()+'_'+Math.random(),date,desc,catId,type,subtype,cardId,amount,memo});
+    const items=getItemsData();
+    DB.transactions.push({id:Date.now()+'_'+Math.random(),date,desc,catId,type,subtype,cardId,amount,memo,items:items.length?items:undefined});
     showToast('저장했습니다 ✓');
   }
+  DB.transactions.sort((a,b)=>b.date.localeCompare(a.date));
   save();closeModal();renderAll();
 }
 
@@ -1373,14 +1462,20 @@ function saveEdit(){
   if(idx===-1){showToast('내역을 찾을 수 없습니다');return;}
   const orig=DB.transactions[idx];
   DB.transactions[idx]={...orig,date,desc,catId,type,subtype,cardId,amount,memo};
+  DB.transactions.sort((a,b)=>b.date.localeCompare(a.date));
   save();closeModal();renderAll();showToast('수정했습니다 ✓');
+}
+function toggleItemDetail(id){
+  const row=document.getElementById('item-detail-'+id);
+  if(!row)return;
+  row.style.display=row.style.display==='none'?'':'none';
 }
 function toggleDashCat(id){
   if(id===null)selectedDashCats.clear();
   else{if(selectedDashCats.has(id))selectedDashCats.delete(id);else selectedDashCats.add(id);}
   renderDashboard();
 }
-function closeModal(){document.getElementById('modal-ov').classList.remove('show');}
+function closeModal(){document.getElementById('modal-ov').classList.remove('show');itemsOpen=false;}
 document.getElementById('modal-ov').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 
