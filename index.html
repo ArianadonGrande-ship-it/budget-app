@@ -130,8 +130,9 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
 .cal-date{font-size:11px;font-weight:500;margin-bottom:3px;color:var(--text2)}
 .cal-amt{font-size:11px;font-weight:600;color:var(--red)}
 .cal-income{font-size:10px;color:var(--green)}
-.cal-dots{display:flex;flex-wrap:wrap;gap:2px;margin-top:2px}
-.cal-dot{width:5px;height:5px;border-radius:50%}
+.cal-bar-wrap{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+.cal-bar-row{display:flex;align-items:center;gap:3px;height:5px}
+.cal-bar{height:5px;border-radius:2px;min-width:2px;transition:width .2s}
 .search-wrap{position:relative;margin-bottom:12px}
 .search-wrap input{padding-left:32px}
 .search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px;color:var(--text3);pointer-events:none}
@@ -353,7 +354,7 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
   </div>
   <div class="card">
     <div class="tw"><table class="t">
-      <thead><tr><th>카드명</th><th>카드사</th><th>색상</th><th>기본</th><th></th></tr></thead>
+      <thead><tr><th>카드명</th><th>카드사</th><th>색상</th><th>기본</th><th></th><th></th></tr></thead>
       <tbody id="card-tbody"></tbody>
     </table></div>
   </div>
@@ -367,7 +368,7 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
   </div>
   <div class="card">
     <div class="tw"><table class="t">
-      <thead><tr><th>카테고리</th><th>유형</th><th>색상</th><th></th></tr></thead>
+      <thead><tr><th>카테고리</th><th>유형</th><th>색상</th><th></th><th></th></tr></thead>
       <tbody id="cat-tbody"></tbody>
     </table></div>
   </div>
@@ -771,12 +772,28 @@ function renderCalendar(){
     const isToday=calY===today.getFullYear()&&calM===today.getMonth()+1&&d===today.getDate();
     const info=dayMap[d];
     const dateStr=`${calY}-${pad(calM)}-${pad(d)}`;
-    const catColors=info?[...new Set(info.txs.map(t=>getCat(t.catId).color))].slice(0,5):[];
+    // 카테고리별 지출 집계 및 막대 생성
+    let catBars='';
+    if(info&&info.expense>0){
+      const catMap={};
+      info.txs.filter(t=>t.type==='expense').forEach(t=>{catMap[t.catId]=(catMap[t.catId]||0)+t.amount;});
+      const sorted=Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,4);
+      // 이 날의 최대 일별 지출(월 기준 대비 비중)을 구하기 위해 월 최대값 사용
+      const maxDayExp=Math.max(...Object.values(dayMap).map(d=>d.expense||0),1);
+      const totalPct=Math.round(info.expense/maxDayExp*100);
+      catBars=`<div class="cal-bar-wrap">
+        ${sorted.map(([cid,amt])=>{
+          const cat=getCat(cid);
+          const pct=Math.max(Math.round(amt/info.expense*totalPct),3);
+          return`<div class="cal-bar-row"><div class="cal-bar" style="width:${pct}%;background:${cat.color}"></div></div>`;
+        }).join('')}
+      </div>`;
+    }
     cells+=`<div class="cal-day${isToday?' today':''}" onclick="showCalDetail('${dateStr}')">
       <div class="cal-date">${d}</div>
       ${info&&info.expense?`<div class="cal-amt">-${fmtS(info.expense)}</div>`:''}
       ${info&&info.income?`<div class="cal-income">+${fmtS(info.income)}</div>`:''}
-      <div class="cal-dots">${catColors.map(c=>`<div class="cal-dot" style="background:${c}"></div>`).join('')}</div>
+      ${catBars}
     </div>`;
   }
   const remaining=(7-((firstDay+daysInMonth)%7))%7;
@@ -983,14 +1000,51 @@ document.getElementById('pattern-months').addEventListener('change',renderPatter
 // ── CARDS ─────────────────────────────────────────────
 function renderCards(){
   const tb=document.getElementById('card-tbody');
-  if(!DB.cards.length){tb.innerHTML='<tr><td colspan="5" class="empty">등록된 카드가 없습니다</td></tr>';return;}
+  if(!DB.cards.length){tb.innerHTML='<tr><td colspan="6" class="empty">등록된 카드가 없습니다</td></tr>';return;}
   tb.innerHTML=DB.cards.map(card=>`<tr>
     <td><span style="display:inline-flex;align-items:center;gap:7px"><span style="width:10px;height:6px;border-radius:2px;background:${card.color};display:inline-block"></span>${card.name}</span></td>
     <td style="color:var(--text2)">${card.company}</td>
     <td><div style="width:24px;height:14px;border-radius:3px;background:${card.color}"></div></td>
     <td>${card.isDefault?'<span class="badge" style="background:var(--green-bg);color:var(--green)">기본</span>':`<button class="btn btn-sm btn-ghost" onclick="setDefaultCard('${card.id}')">기본으로</button>`}</td>
+    <td><button class="btn btn-sm btn-ghost" onclick="openEditCardModal('${card.id}')">✎ 수정</button></td>
     <td style="text-align:right"><button class="btn btn-sm btn-danger" onclick="deleteCard('${card.id}')">✕</button></td>
   </tr>`).join('');
+}
+function openEditCardModal(id){
+  const card=DB.cards.find(c=>c.id===id);
+  if(!card)return;
+  document.getElementById('modal-title').textContent='카드 수정';
+  document.getElementById('modal-body').innerHTML=`
+    <div class="fr">
+      <div class="fg"><label>카드명</label><input type="text" id="edit-card-name" value="${card.name}"></div>
+      <div class="fg"><label>카드사</label><input type="text" id="edit-card-company" value="${card.company}"></div>
+    </div>
+    <div class="fg" style="margin-bottom:18px"><label>카드 색상</label>
+      <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:5px" id="edit-card-color-opts">
+        ${CARD_COLORS.map(col=>`<div class="pcolor-opt${col===card.color?' selected':''}" style="background:${col};width:30px;height:30px" data-color="${col}" onclick="selectEditCardColor(this)"></div>`).join('')}
+      </div>
+      <input type="hidden" id="edit-card-color" value="${card.color}">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModal()">취소</button>
+      <button class="btn btn-primary" onclick="saveEditCard('${card.id}')">✓ 저장</button>
+    </div>`;
+  document.getElementById('modal-ov').classList.add('show');
+}
+function selectEditCardColor(el){
+  document.querySelectorAll('#edit-card-color-opts .pcolor-opt').forEach(e=>e.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('edit-card-color').value=el.dataset.color;
+}
+function saveEditCard(id){
+  const card=DB.cards.find(c=>c.id===id);
+  if(!card)return;
+  const name=document.getElementById('edit-card-name').value.trim();
+  const company=document.getElementById('edit-card-company').value.trim()||'-';
+  const color=document.getElementById('edit-card-color').value;
+  if(!name){showToast('카드명을 입력하세요');return;}
+  card.name=name;card.company=company;card.color=color;
+  save();closeModal();renderCards();showToast('카드를 수정했습니다');
 }
 function setDefaultCard(id){DB.cards.forEach(c=>c.isDefault=c.id===id);save();renderCards();showToast('기본 카드를 변경했습니다');}
 function deleteCard(id){if(!confirm('카드를 삭제할까요?'))return;DB.cards=DB.cards.filter(c=>c.id!==id);save();renderCards();showToast('삭제했습니다');}
@@ -1000,20 +1054,46 @@ function renderCategories(){
   document.getElementById('cat-tbody').innerHTML=DB.categories.map(cat=>`<tr>
     <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span></td>
     <td style="color:var(--text2)">${{income:'수입',expense:'지출',saving:'저축'}[cat.type]}</td>
-    <td>
-      <div style="display:flex;align-items:center;gap:8px">
-        <div style="width:18px;height:18px;border-radius:50%;background:${cat.color}"></div>
-        <div class="pcolor-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:0">
-          ${PASTEL.map(pc=>`<div onclick="changeCatColor('${cat.id}','${pc}')" style="width:14px;height:14px;border-radius:50%;background:${pc};cursor:pointer;border:2px solid ${pc===cat.color?'#333':'transparent'};transition:border .1s"></div>`).join('')}
-        </div>
-      </div>
-    </td>
+    <td><div style="width:20px;height:20px;border-radius:50%;background:${cat.color}"></div></td>
+    <td><button class="btn btn-sm btn-ghost" onclick="openEditCatModal('${cat.id}')">✎ 수정</button></td>
     <td style="text-align:right"><button class="btn btn-sm btn-danger" onclick="deleteCat('${cat.id}')">✕</button></td>
   </tr>`).join('');
 }
-function changeCatColor(id,color){
+function openEditCatModal(id){
   const cat=DB.categories.find(c=>c.id===id);
-  if(cat){cat.color=color;save();renderCategories();showToast('색상을 변경했습니다');}
+  if(!cat)return;
+  document.getElementById('modal-title').textContent='카테고리 수정';
+  document.getElementById('modal-body').innerHTML=`
+    <div class="fg" style="margin-bottom:12px">
+      <label>이름</label>
+      <input type="text" id="edit-cat-name" value="${cat.name}">
+    </div>
+    <div class="fg" style="margin-bottom:18px">
+      <label>색상 선택</label>
+      <div class="pcolor-grid" id="edit-pcolor-grid">
+        ${PASTEL.map(pc=>`<div class="pcolor-opt${pc===cat.color?' selected':''}" style="background:${pc}" data-color="${pc}" onclick="selectEditCatColor(this)"></div>`).join('')}
+      </div>
+      <input type="hidden" id="edit-cat-color" value="${cat.color}">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModal()">취소</button>
+      <button class="btn btn-primary" onclick="saveEditCat('${cat.id}')">✓ 저장</button>
+    </div>`;
+  document.getElementById('modal-ov').classList.add('show');
+}
+function selectEditCatColor(el){
+  document.querySelectorAll('#edit-pcolor-grid .pcolor-opt').forEach(e=>e.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('edit-cat-color').value=el.dataset.color;
+}
+function saveEditCat(id){
+  const cat=DB.categories.find(c=>c.id===id);
+  if(!cat)return;
+  const name=document.getElementById('edit-cat-name').value.trim();
+  const color=document.getElementById('edit-cat-color').value;
+  if(!name){showToast('이름을 입력하세요');return;}
+  cat.name=name;cat.color=color;
+  save();closeModal();renderCategories();showToast('카테고리를 수정했습니다');
 }
 function deleteCat(id){if(!confirm('삭제할까요?'))return;DB.categories=DB.categories.filter(c=>c.id!==id);save();renderCategories();showToast('삭제했습니다');}
 
