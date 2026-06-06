@@ -255,7 +255,16 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
   <div class="ph">
     <div><div class="pt">내역</div></div>
     <div class="bg">
-      <select id="filter-month" style="width:auto"></select>
+      <div style="display:flex;align-items:center;gap:4px">
+        <select id="filter-year" style="width:auto" onchange="renderTransactions()"></select>
+        <select id="filter-month-only" style="width:auto" onchange="renderTransactions()">
+          <option value="">전체</option>
+          <option value="01">1월</option><option value="02">2월</option><option value="03">3월</option>
+          <option value="04">4월</option><option value="05">5월</option><option value="06">6월</option>
+          <option value="07">7월</option><option value="08">8월</option><option value="09">9월</option>
+          <option value="10">10월</option><option value="11">11월</option><option value="12">12월</option>
+        </select>
+      </div>
       <select id="filter-type" style="width:auto">
         <option value="">전체 유형</option><option value="income">수입</option><option value="expense">지출</option><option value="saving">저축</option>
       </select>
@@ -513,26 +522,39 @@ function monthStats(y,m){
   return{income,expense,fixedExp,varExp,saving,balance:income-expense-saving,txs};
 }
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
+function installmentLabel(t){
+  // 할부 원본: installment={total,current,groupId}
+  if(!t.installment)return'';
+  const {total,current}=t.installment;
+  return`<span style="color:var(--text3);font-size:10px;margin-left:5px">${current}/${total}개월 할부</span>`;
+}
 function txRow(t,cols=6){
   const cat=getCat(t.catId);const card=getCard(t.cardId);
   const stL=t.subtype==='fixed'?'고정':t.subtype==='variable'?'변동':t.subtype==='fixed_income'?'고정수입':t.subtype==='extra_income'?'추가수입':'-';
   const stC=(t.subtype==='fixed'||t.subtype==='fixed_income')?'fixed-chip':'var-chip';
-  const del=`<button class="btn btn-sm btn-danger" onclick="deleteTx('${t.id}')">✕</button>`;
+  const instLabel=installmentLabel(t);
+  const isInstChild=t.installment&&t.installment.current>1; // 2회차 이상은 삭제 불가(원본만)
+  const del=isInstChild
+    ?`<button class="btn btn-sm" style="color:var(--text3);border-color:transparent;font-size:11px" onclick="alert('할부 내역은 원본(1/${t.installment.total})에서 삭제하세요')">-</button>`
+    :`<button class="btn btn-sm btn-danger" onclick="deleteTx('${t.id}')">✕</button>`;
+  const edit=`<button class="btn btn-sm btn-ghost" onclick="openEditModal('${t.id}')" style="padding:4px 7px">✎</button>`;
   if(cols===6)return`<tr>
-    <td style="color:var(--text2);white-space:nowrap">${t.date}</td><td>${t.desc}</td>
+    <td style="color:var(--text2);white-space:nowrap">${t.date}</td>
+    <td>${t.desc}${instLabel}</td>
     <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span></td>
     <td>${card?`<span class="card-chip" style="background:${card.color}22;color:${card.color}">${card.name}</span>`:'<span style="color:var(--text3);font-size:11px">-</span>'}</td>
     <td><span class="${stC}">${stL}</span></td>
     <td style="text-align:right;white-space:nowrap" class="${t.type==='expense'?'neg':t.type==='saving'?'sav':'pos'}">${t.type==='expense'?'-':'+'}${fmt(t.amount)}</td>
     <td></td></tr>`;
   return`<tr>
-    <td style="color:var(--text2);white-space:nowrap">${t.date}</td><td>${t.desc}</td>
+    <td style="color:var(--text2);white-space:nowrap">${t.date}</td>
+    <td>${t.desc}${instLabel}</td>
     <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span></td>
     <td>${card?`<span class="card-chip" style="background:${card.color}22;color:${card.color}">${card.name}</span>`:'<span style="color:var(--text3);font-size:11px">-</span>'}</td>
     <td><span class="${stC}">${stL}</span></td>
-    <td style="color:var(--text2);font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.memo||'-'}</td>
+    <td style="color:var(--text2);font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.memo||'-'}</td>
     <td style="text-align:right;white-space:nowrap" class="${t.type==='expense'?'neg':t.type==='saving'?'sav':'pos'}">${t.type==='expense'?'-':'+'}${fmt(t.amount)}</td>
-    <td>${del}</td></tr>`;
+    <td style="display:flex;gap:3px;align-items:center">${edit}${del}</td></tr>`;
 }
 
 // NAV
@@ -766,12 +788,18 @@ function showCalDetail(dateStr){
 
 // ── TRANSACTIONS ──────────────────────────────────────
 function initMonthFilter(){
-  const sel=document.getElementById('filter-month');
-  const months=[];
-  for(let i=0;i<18;i++){let y=curY,m=curM-i;while(m<1){m+=12;y--;}months.push(`${y}-${pad(m)}`);}
-  const cur=sel.value||`${curY}-${pad(curM)}`;
-  sel.innerHTML='<option value="">전체 기간</option>'+months.map(v=>`<option value="${v}">${v}</option>`).join('');
-  sel.value=cur;
+  const sel=document.getElementById('filter-year');
+  if(!sel)return;
+  const curVal=sel.value;
+  // range: 2020 ~ curY+5
+  const startY=2020, endY=curY+5;
+  let opts='<option value="">전체 연도</option>';
+  for(let y=endY;y>=startY;y--) opts+=`<option value="${y}"${y===curY?' selected':''}>${y}년</option>`;
+  sel.innerHTML=opts;
+  if(curVal) sel.value=curVal;
+  // set current month
+  const mSel=document.getElementById('filter-month-only');
+  if(mSel&&!mSel.value) mSel.value=pad(curM);
 }
 function renderCatFilterBar(){
   const bar=document.getElementById('cat-filter-bar');
@@ -782,11 +810,13 @@ function renderCatFilterBar(){
 }
 function toggleCatFilter(id){activeCatFilter=id;renderCatFilterBar();renderTransactions();}
 function renderTransactions(){
-  const fm=document.getElementById('filter-month').value;
+  const fy=document.getElementById('filter-year')?.value||'';
+  const fmo=document.getElementById('filter-month-only')?.value||'';
   const ft=document.getElementById('filter-type').value;
   const fq=(document.getElementById('tx-search').value||'').trim().toLowerCase();
   let txs=DB.transactions.filter(t=>{
-    if(fm&&!t.date.startsWith(fm))return false;
+    if(fy&&!t.date.startsWith(fy))return false;
+    if(fmo&&t.date.slice(5,7)!==fmo)return false;
     if(ft&&t.type!==ft)return false;
     if(activeCatFilter!==null&&t.catId!==activeCatFilter)return false;
     if(fq&&!t.desc.toLowerCase().includes(fq)&&!(t.memo||'').toLowerCase().includes(fq))return false;
@@ -805,10 +835,22 @@ function renderTransactions(){
   if(!txs.length){tb.innerHTML='<tr><td colspan="8" class="empty" style="padding:2rem">내역이 없습니다</td></tr>';return;}
   tb.innerHTML=txs.map(t=>txRow(t,8)).join('');
 }
-document.getElementById('filter-month').addEventListener('change',renderTransactions);
 document.getElementById('filter-type').addEventListener('change',renderTransactions);
 document.getElementById('tx-search').addEventListener('input',renderTransactions);
-function deleteTx(id){if(!confirm('삭제할까요?'))return;DB.transactions=DB.transactions.filter(t=>t.id!==id);save();renderAll();showToast('삭제했습니다');}
+function deleteTx(id){
+  const t=DB.transactions.find(x=>x.id===id);
+  if(t?.installment&&t.installment.current===1&&t.installment.total>1){
+    if(!confirm(`${t.installment.total}개월 할부 전체(${t.installment.total}건)를 삭제할까요?`))return;
+    const gid=t.installment.groupId;
+    DB.transactions=DB.transactions.filter(x=>!x.installment||x.installment.groupId!==gid);
+    showToast(`할부 ${t.installment.total}건 전체 삭제했습니다`);
+  } else {
+    if(!confirm('삭제할까요?'))return;
+    DB.transactions=DB.transactions.filter(x=>x.id!==id);
+    showToast('삭제했습니다');
+  }
+  save();renderAll();
+}
 
 // ── BUDGET ────────────────────────────────────────────
 function renderBudget(){
@@ -1025,6 +1067,15 @@ function openAddModal(){
     <div class="fg" id="card-row" style="margin-bottom:12px"><label>카드</label>
       <select id="tx-card">${cardOptions(defCard?.id)}</select>
     </div>
+    <div class="fg" id="installment-row" style="margin-bottom:12px"><label>할부</label>
+      <select id="tx-installment">
+        <option value="1">일시불</option>
+        <option value="2">2개월</option>
+        <option value="3">3개월</option>
+        <option value="6">6개월</option>
+        <option value="12">12개월</option>
+      </select>
+    </div>
     <div class="fg" style="margin-bottom:16px"><label>메모</label><textarea id="tx-memo" placeholder="메모 (선택)"></textarea></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="closeModal()">취소</button>
@@ -1041,7 +1092,11 @@ function setTxType(el,type){
   if(type==='expense'){sr.style.display='';sr.innerHTML=`<div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:5px">지출 구분</div><div class="subtabs"><button class="subtab" onclick="setSubtype(this,'fixed')">고정 지출</button><button class="subtab active" onclick="setSubtype(this,'variable')">변동 지출</button></div>`;document.getElementById('tx-subtype').value='variable';}
   else if(type==='income'){sr.style.display='';sr.innerHTML=`<div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:5px">수입 구분</div><div class="subtabs"><button class="subtab active" onclick="setSubtype(this,'fixed_income')">고정 수입</button><button class="subtab" onclick="setSubtype(this,'extra_income')">추가 수입</button></div>`;document.getElementById('tx-subtype').value='fixed_income';}
   else{sr.style.display='none';document.getElementById('tx-subtype').value='';}
-  document.getElementById('card-row').style.display=(type==='income'||type==='saving')?'none':'';
+  const cardRowEl=document.getElementById('card-row');
+  const instRowEl=document.getElementById('installment-row');
+  const hide=(type==='income'||type==='saving');
+  if(cardRowEl)cardRowEl.style.display=hide?'none':'';
+  if(instRowEl)instRowEl.style.display=hide?'none':'';
 }
 function setSubtype(el,val){el.closest('.subtabs').querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));el.classList.add('active');document.getElementById('tx-subtype').value=val;}
 function saveTx(){
@@ -1054,11 +1109,37 @@ function saveTx(){
   const crEl=document.getElementById('card-row');
   const cardId=crEl&&crEl.style.display!=='none'?document.getElementById('tx-card').value||null:null;
   const memo=document.getElementById('tx-memo').value.trim();
+  const instEl=document.getElementById('tx-installment');
+  const installMonths=instEl&&instEl.closest('#installment-row')?.style.display!=='none'?parseInt(instEl.value)||1:1;
   if(!date){showToast('날짜를 입력하세요');return;}
   if(!amount||amount<=0){showToast('금액을 입력하세요');return;}
   if(!desc){showToast('내용을 입력하세요');return;}
-  DB.transactions.push({id:Date.now()+'_'+Math.random(),date,desc,catId,type,subtype,cardId,amount,memo});
-  save();closeModal();renderAll();showToast('저장했습니다 ✓');
+
+  if(installMonths>1&&type==='expense'){
+    // 할부: 월 금액 = Math.round(amount/installMonths), 마지막 달은 나머지
+    const groupId='inst_'+Date.now();
+    const monthly=Math.floor(amount/installMonths);
+    const remainder=amount-monthly*(installMonths-1);
+    const [baseY,baseM,baseD]=date.split('-').map(Number);
+    for(let i=0;i<installMonths;i++){
+      let y=baseY,m=baseM+i;
+      while(m>12){m-=12;y++;}
+      const d=Math.min(baseD,new Date(y,m,0).getDate());
+      const instDate=`${y}-${pad(m)}-${pad(d)}`;
+      const instAmt=(i===installMonths-1)?remainder:monthly;
+      DB.transactions.push({
+        id:Date.now()+'_'+Math.random()+'_'+i,
+        date:instDate,desc,catId,type,subtype,cardId,
+        amount:instAmt,memo,
+        installment:{total:installMonths,current:i+1,groupId}
+      });
+    }
+    showToast(`${installMonths}개월 할부로 저장했습니다 ✓`);
+  } else {
+    DB.transactions.push({id:Date.now()+'_'+Math.random(),date,desc,catId,type,subtype,cardId,amount,memo});
+    showToast('저장했습니다 ✓');
+  }
+  save();closeModal();renderAll();
 }
 
 function openBudgetModal(){
@@ -1203,6 +1284,97 @@ function saveRecurring(){
   save();closeModal();renderRecurring();showToast('반복 내역을 등록했습니다');
 }
 
+function openEditModal(id){
+  const t=DB.transactions.find(x=>x.id===id);
+  if(!t){showToast('내역을 찾을 수 없습니다');return;}
+  if(t.installment&&t.installment.current>1){showToast('할부 세부 내역은 원본(1회차)에서 수정하세요');return;}
+  document.getElementById('modal-title').textContent='내역 수정';
+  const defCard=DB.cards.find(c=>c.isDefault);
+  const isExpense=t.type==='expense';
+  const isIncome=t.type==='income';
+  document.getElementById('modal-body').innerHTML=`
+    <input type="hidden" id="edit-id" value="${t.id}">
+    <div class="ttabs">
+      <button class="ttab${t.type==='expense'?' active':''}" onclick="setEditType(this,'expense')">지출</button>
+      <button class="ttab${t.type==='income'?' active':''}" onclick="setEditType(this,'income')">수입</button>
+      <button class="ttab${t.type==='saving'?' active':''}" onclick="setEditType(this,'saving')">저축</button>
+    </div>
+    <input type="hidden" id="edit-type" value="${t.type}">
+    <div id="edit-subtype-row" style="margin-bottom:12px;${t.type==='saving'?'display:none':''}">
+      <div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:5px">${t.type==='income'?'수입':'지출'} 구분</div>
+      <div class="subtabs">
+        ${t.type==='expense'?`
+          <button class="subtab${t.subtype==='fixed'?' active':''}" onclick="setEditSubtype(this,'fixed')">고정 지출</button>
+          <button class="subtab${t.subtype==='variable'?' active':''}" onclick="setEditSubtype(this,'variable')">변동 지출</button>
+        `:`
+          <button class="subtab${t.subtype==='fixed_income'?' active':''}" onclick="setEditSubtype(this,'fixed_income')">고정 수입</button>
+          <button class="subtab${t.subtype==='extra_income'?' active':''}" onclick="setEditSubtype(this,'extra_income')">추가 수입</button>
+        `}
+      </div>
+    </div>
+    <input type="hidden" id="edit-subtype" value="${t.subtype||''}">
+    <div class="fr">
+      <div class="fg"><label>날짜 *</label><input type="date" id="edit-date" value="${t.date}"></div>
+      <div class="fg"><label>금액 *</label><input type="number" id="edit-amount" value="${t.amount}" min="0" step="1000"></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label>내용 *</label><input type="text" id="edit-desc" value="${t.desc}"></div>
+      <div class="fg"><label>카테고리</label>
+        <select id="edit-cat">${DB.categories.filter(c=>c.type===t.type).map(c=>`<option value="${c.id}"${c.id===t.catId?' selected':''}>${c.name}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="fg" id="edit-card-row" style="margin-bottom:12px;${t.type==='income'||t.type==='saving'?'display:none':''}">
+      <label>카드</label>
+      <select id="edit-card">${cardOptions(t.cardId||defCard?.id)}</select>
+    </div>
+    <div class="fg" style="margin-bottom:16px"><label>메모</label>
+      <textarea id="edit-memo">${t.memo||''}</textarea>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModal()">취소</button>
+      <button class="btn btn-primary" onclick="saveEdit()">✓ 저장</button>
+    </div>`;
+  document.getElementById('modal-ov').classList.add('show');
+}
+function setEditType(el,type){
+  el.closest('.ttabs').querySelectorAll('.ttab').forEach(b=>b.classList.remove('active'));el.classList.add('active');
+  document.getElementById('edit-type').value=type;
+  document.getElementById('edit-cat').innerHTML=DB.categories.filter(c=>c.type===type).map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  const sr=document.getElementById('edit-subtype-row');
+  const cr=document.getElementById('edit-card-row');
+  if(type==='saving'){sr.style.display='none';cr.style.display='none';}
+  else if(type==='income'){sr.style.display='';cr.style.display='none';
+    sr.querySelector('.subtabs').innerHTML=`<button class="subtab active" onclick="setEditSubtype(this,'fixed_income')">고정 수입</button><button class="subtab" onclick="setEditSubtype(this,'extra_income')">추가 수입</button>`;
+    document.getElementById('edit-subtype').value='fixed_income';
+  } else {sr.style.display='';cr.style.display='';
+    sr.querySelector('.subtabs').innerHTML=`<button class="subtab active" onclick="setEditSubtype(this,'fixed')">고정 지출</button><button class="subtab" onclick="setEditSubtype(this,'variable')">변동 지출</button>`;
+    document.getElementById('edit-subtype').value='fixed';
+  }
+}
+function setEditSubtype(el,val){
+  el.closest('.subtabs').querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));el.classList.add('active');
+  document.getElementById('edit-subtype').value=val;
+}
+function saveEdit(){
+  const id=document.getElementById('edit-id').value;
+  const date=document.getElementById('edit-date').value;
+  const amount=parseFloat(document.getElementById('edit-amount').value);
+  const desc=document.getElementById('edit-desc').value.trim();
+  const catId=document.getElementById('edit-cat').value;
+  const type=document.getElementById('edit-type').value;
+  const subtype=document.getElementById('edit-subtype').value;
+  const crEl=document.getElementById('edit-card-row');
+  const cardId=crEl&&crEl.style.display!=='none'?document.getElementById('edit-card').value||null:null;
+  const memo=document.getElementById('edit-memo').value.trim();
+  if(!date){showToast('날짜를 입력하세요');return;}
+  if(!amount||amount<=0){showToast('금액을 입력하세요');return;}
+  if(!desc){showToast('내용을 입력하세요');return;}
+  const idx=DB.transactions.findIndex(x=>x.id===id);
+  if(idx===-1){showToast('내역을 찾을 수 없습니다');return;}
+  const orig=DB.transactions[idx];
+  DB.transactions[idx]={...orig,date,desc,catId,type,subtype,cardId,amount,memo};
+  save();closeModal();renderAll();showToast('수정했습니다 ✓');
+}
 function toggleDashCat(id){
   if(id===null)selectedDashCats.clear();
   else{if(selectedDashCats.has(id))selectedDashCats.delete(id);else selectedDashCats.add(id);}
