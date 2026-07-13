@@ -287,6 +287,14 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
     <span><span class="sum-label">잔액</span><span class="sum-val" id="tx-sum-balance">₩0</span></span>
     <span style="margin-left:auto;font-size:12px;color:var(--text3)" id="tx-sum-count"></span>
   </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+    <span style="font-size:11px;color:var(--text3);margin-right:2px">구분</span>
+    <button class="chip active" id="sf-all" onclick="toggleSubtypeFilter(null)">전체</button>
+    <button class="chip" id="sf-fixed" onclick="toggleSubtypeFilter('fixed')">고정 지출</button>
+    <button class="chip" id="sf-variable" onclick="toggleSubtypeFilter('variable')">변동 지출</button>
+    <button class="chip" id="sf-fixed_income" onclick="toggleSubtypeFilter('fixed_income')">고정 수입</button>
+    <button class="chip" id="sf-extra_income" onclick="toggleSubtypeFilter('extra_income')">추가 수입</button>
+  </div>
   <div class="filter-bar" id="cat-filter-bar"></div>
   <div class="card">
     <div class="tw"><table class="t">
@@ -431,12 +439,12 @@ let curY=new Date().getFullYear(),curM=new Date().getMonth()+1;
 let calY=curY,calM=curM;
 let dashPeriod=1,dashChartType='bar';
 let charts={};
-let activeCatFilter=null,selectedDashCats=new Set();
+let activeCatFilter=null,selectedDashCats=new Set(),activeSubtypeFilters=new Set();
 let isSaving=false;
 
 let DB={
   transactions:[],
-  budgets:{cats:{}},
+  budgets:{monthly:{}},  // { 'YYYY-MM': { catId: amount } }
   categories:[
     {id:'income',name:'수입',type:'income',color:'#c8e6a0'},
     {id:'food',name:'식비',type:'expense',color:'#f4a3a3'},
@@ -470,7 +478,16 @@ async function syncFromSheet(manual=false){
     const json=await res.json();
     if(json.ok&&json.data){
       DB=json.data;
-      if(!DB.budgets||!DB.budgets.cats)DB.budgets={cats:{}};
+      if(!DB.budgets)DB.budgets={monthly:{}};
+      // migrate old cats structure
+      if(DB.budgets.cats&&!DB.budgets.monthly){
+        DB.budgets.monthly={};
+        const today=new Date();
+        const key=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+        DB.budgets.monthly[key]=DB.budgets.cats;
+        delete DB.budgets.cats;
+      }
+      if(!DB.budgets.monthly)DB.budgets.monthly={};
       if(!DB.cards)DB.cards=[];
       if(!DB.recurring)DB.recurring=[];
       renderAll();
@@ -617,7 +634,8 @@ function renderDashboard(){
   const nowTxs=monthStats(curY,curM).txs;
   const nowSpend={};
   nowTxs.filter(t=>t.type==='expense').forEach(t=>{nowSpend[t.catId]=(nowSpend[t.catId]||0)+t.amount;});
-  Object.entries(DB.budgets.cats||{}).forEach(([cid,b])=>{
+  const _budgetKey=`${curY}-${pad(curM)}`;
+  Object.entries((DB.budgets.monthly||{})[_budgetKey]||{}).forEach(([cid,b])=>{
     const s=nowSpend[cid]||0;const pct=b?Math.round(s/b*100):0;const cat=getCat(cid);
     if(pct>=100)alerts.push({type:'danger',msg:`🚨 <b>${cat.name}</b> 예산 초과! (${fmt(s)} / ${fmt(b)})`});
     else if(pct>=80)alerts.push({type:'warn',msg:`⚠ <b>${cat.name}</b> 예산 ${pct}% 사용 — 초과 임박`});
@@ -625,7 +643,8 @@ function renderDashboard(){
   const today=new Date();
   if(curY===today.getFullYear()&&curM===today.getMonth()+1){
     const dInM=new Date(curY,curM,0).getDate();const dPassed=today.getDate();
-    const totalBudget=Object.values(DB.budgets.cats||{}).reduce((s,v)=>s+v,0);
+    const _bk=`${curY}-${pad(curM)}`;
+    const totalBudget=Object.values((DB.budgets.monthly||{})[_bk]||{}).reduce((s,v)=>s+v,0);
     const curE=monthStats(curY,curM).expense;
     if(totalBudget>0&&dPassed>0){
       const proj=Math.round(curE/dPassed*dInM);
@@ -697,7 +716,8 @@ function renderDashboard(){
     const dInM=new Date(curY,curM,0).getDate();const dPassed=todayD.getDate();
     const curE=monthStats(curY,curM).expense;
     const projected=dPassed>0?Math.round(curE/dPassed*dInM):0;
-    const totalBudget=Object.values(DB.budgets.cats||{}).reduce((s,v)=>s+v,0);
+    const _pk=`${curY}-${pad(curM)}`;
+    const totalBudget=Object.values((DB.budgets.monthly||{})[_pk]||{}).reduce((s,v)=>s+v,0);
     const pct=dInM>0?Math.round(dPassed/dInM*100):0;
     const budgetLine=totalBudget?`예산 <b>${fmt(totalBudget)}</b> 대비 예상 <span class="${projected>totalBudget?'neg':'pos'}">${projected>totalBudget?'초과':'여유'}</span>`:'예산 미설정';
     paceEl.innerHTML=`<div style="background:linear-gradient(135deg,#f8f4ff,#ede8fb);border:1px solid #d4c8f4;border-radius:var(--rl);padding:14px 18px;margin-bottom:12px">
@@ -840,6 +860,22 @@ function renderCatFilterBar(){
     </button>`).join('');
 }
 function toggleCatFilter(id){activeCatFilter=id;renderCatFilterBar();renderTransactions();}
+function toggleSubtypeFilter(val){
+  if(val===null){
+    activeSubtypeFilters.clear();
+  } else {
+    if(activeSubtypeFilters.has(val)) activeSubtypeFilters.delete(val);
+    else activeSubtypeFilters.add(val);
+  }
+  // 칩 active 상태 업데이트
+  ['all','fixed','variable','fixed_income','extra_income'].forEach(k=>{
+    const el=document.getElementById('sf-'+k);
+    if(!el)return;
+    if(k==='all') el.classList.toggle('active', activeSubtypeFilters.size===0);
+    else el.classList.toggle('active', activeSubtypeFilters.has(k));
+  });
+  renderTransactions();
+}
 function renderTransactions(){
   const fy=document.getElementById('filter-year')?.value||'';
   const fmo=document.getElementById('filter-month-only')?.value||'';
@@ -850,6 +886,7 @@ function renderTransactions(){
     if(fmo&&t.date.slice(5,7)!==fmo)return false;
     if(ft&&t.type!==ft)return false;
     if(activeCatFilter!==null&&t.catId!==activeCatFilter)return false;
+    if(activeSubtypeFilters.size>0&&!activeSubtypeFilters.has(t.subtype||''))return false;
     if(fq&&!t.desc.toLowerCase().includes(fq)&&!(t.memo||'').toLowerCase().includes(fq))return false;
     return true;
   }).sort((a,b)=>b.date.localeCompare(a.date));
@@ -891,7 +928,7 @@ function renderBudget(){
   const spend={};txs.forEach(t=>{spend[t.catId]=(spend[t.catId]||0)+t.amount;});
   const fixedTotal=txs.filter(t=>t.subtype==='fixed').reduce((s,t)=>s+t.amount,0);
   const varTotal=txs.filter(t=>t.subtype!=='fixed').reduce((s,t)=>s+t.amount,0);
-  const budgetCats=DB.budgets.cats||{};
+  const budgetCats=(DB.budgets.monthly||{})[key]||{};
   const budgetTotal=Object.values(budgetCats).reduce((s,v)=>s+v,0);
   const spendTotal=Object.values(spend).reduce((s,v)=>s+v,0);
   const getBudgetStatus=(pct,over)=>{
@@ -1162,7 +1199,7 @@ function openAddModal(){
     </div>
     <input type="hidden" id="tx-subtype" value="variable">
     <div class="fr">
-      <div class="fg"><label>날짜 *</label><input type="date" id="tx-date" value="${curY}-${pad(curM)}-${pad(new Date().getDate())}"></div>
+      <div class="fg"><label>날짜 *</label><input type="date" id="tx-date" value="${new Date().toLocaleDateString('sv-SE')}"></div>
       <div class="fg"><label>금액 *</label><input type="number" id="tx-amount" placeholder="0" min="0" step="1000"></div>
     </div>
     <div class="fr">
@@ -1311,29 +1348,43 @@ function saveTx(){
   save();closeModal();renderAll();
 }
 
-function openBudgetModal(){
+function openBudgetModal(targetKey){
+  const key=targetKey||`${curY}-${pad(curM)}`;
   document.getElementById('modal-title').textContent='예산 설정';
   const expCats=DB.categories.filter(c=>c.type==='expense');
-  const budgetCats=DB.budgets.cats||{};
+  const budgetCats=(DB.budgets.monthly||{})[key]||{};
+  // 최근 6개월 + 다음 2개월 목록
+  const monthOpts=[];
+  for(let i=5;i>=-2;i--){let y=curY,m=curM-i;while(m<1){m+=12;y--;}while(m>12){m-=12;y++;}monthOpts.push(`${y}-${pad(m)}`);}
+  const monthSel=monthOpts.map(mk=>`<option value="${mk}"${mk===key?' selected':''}>${mk}</option>`).join('');
   document.getElementById('modal-body').innerHTML=`
-    <p style="font-size:12px;color:var(--text2);margin-bottom:14px">카테고리별 월 예산을 설정하세요.</p>
+    <div class="fg" style="margin-bottom:14px">
+      <label>예산 설정 월</label>
+      <select id="budget-month-sel" onchange="openBudgetModal(this.value)">${monthSel}</select>
+    </div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px">
+      <b>${key}</b> 예산을 설정하세요. 다른 달은 위에서 선택하세요.
+    </div>
     ${expCats.map(cat=>`<div class="fg" style="margin-bottom:10px">
       <label><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${cat.color};margin-right:6px"></span>${cat.name}</label>
       <input type="number" id="bc-${cat.id}" value="${budgetCats[cat.id]||''}" placeholder="미설정" min="0" step="10000">
     </div>`).join('')}
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="closeModal()">취소</button>
-      <button class="btn btn-primary" onclick="saveBudget()">✓ 저장</button>
+      <button class="btn btn-primary" onclick="saveBudget('${key}')">✓ 저장</button>
     </div>`;
   document.getElementById('modal-ov').classList.add('show');
 }
-function saveBudget(){
-  if(!DB.budgets.cats)DB.budgets.cats={};
+function saveBudget(key){
+  const k=key||`${curY}-${pad(curM)}`;
+  if(!DB.budgets.monthly)DB.budgets.monthly={};
+  if(!DB.budgets.monthly[k])DB.budgets.monthly[k]={};
   DB.categories.filter(c=>c.type==='expense').forEach(cat=>{
     const v=parseFloat(document.getElementById('bc-'+cat.id)?.value);
-    if(v>0)DB.budgets.cats[cat.id]=v;else delete DB.budgets.cats[cat.id];
+    if(v>0)DB.budgets.monthly[k][cat.id]=v;else delete DB.budgets.monthly[k][cat.id];
+    if(Object.keys(DB.budgets.monthly[k]).length===0)delete DB.budgets.monthly[k];
   });
-  save();closeModal();renderBudget();showToast('예산을 저장했습니다');
+  save();closeModal();renderBudget();showToast(`${k} 예산을 저장했습니다`);
 }
 
 function openCardModal(){
