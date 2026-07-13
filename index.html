@@ -307,8 +307,13 @@ textarea{resize:vertical;min-height:56px;line-height:1.5}
 <!-- BUDGET -->
 <div id="page-budget" class="page">
   <div class="ph">
-    <div><div class="pt">예산 관리</div><div class="ps">카테고리별 예산 현황</div></div>
+    <div><div class="pt">예산 관리</div><div class="ps" id="budget-period-label"></div></div>
     <button class="btn btn-primary" onclick="openBudgetModal()">✓ 예산 설정</button>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:14px;align-items:center">
+    <button class="chip active" id="bsf-all" onclick="setBudgetSubFilter('all')">전체</button>
+    <button class="chip" id="bsf-fixed" onclick="setBudgetSubFilter('fixed')">고정 지출만</button>
+    <button class="chip" id="bsf-variable" onclick="setBudgetSubFilter('variable')">변동 지출만</button>
   </div>
   <div id="budget-content"></div>
 </div>
@@ -439,7 +444,7 @@ let curY=new Date().getFullYear(),curM=new Date().getMonth()+1;
 let calY=curY,calM=curM;
 let dashPeriod=1,dashChartType='bar';
 let charts={};
-let activeCatFilter=null,selectedDashCats=new Set(),activeSubtypeFilters=new Set();
+let activeCatFilter=null,selectedDashCats=new Set(),activeSubtypeFilters=new Set(),budgetSubFilter='all';
 let isSaving=false;
 
 let DB={
@@ -921,13 +926,27 @@ function deleteTx(id){
 }
 
 // ── BUDGET ────────────────────────────────────────────
+function setBudgetSubFilter(val){
+  budgetSubFilter=val;
+  ['all','fixed','variable'].forEach(k=>{
+    const el=document.getElementById('bsf-'+k);
+    if(el) el.classList.toggle('active', k===val);
+  });
+  renderBudget();
+}
 function renderBudget(){
+  const lbl=document.getElementById('budget-period-label');
+  if(lbl)lbl.textContent=`${curY}년 ${curM}월`;
   const expCats=DB.categories.filter(c=>c.type==='expense');
   const key=`${curY}-${pad(curM)}`;
-  const txs=DB.transactions.filter(t=>t.date.startsWith(key)&&t.type==='expense');
+  const allTxs=DB.transactions.filter(t=>t.date.startsWith(key)&&t.type==='expense');
+  // 필터 적용된 txs
+  const txs=budgetSubFilter==='fixed'?allTxs.filter(t=>t.subtype==='fixed')
+           :budgetSubFilter==='variable'?allTxs.filter(t=>t.subtype!=='fixed')
+           :allTxs;
   const spend={};txs.forEach(t=>{spend[t.catId]=(spend[t.catId]||0)+t.amount;});
-  const fixedTotal=txs.filter(t=>t.subtype==='fixed').reduce((s,t)=>s+t.amount,0);
-  const varTotal=txs.filter(t=>t.subtype!=='fixed').reduce((s,t)=>s+t.amount,0);
+  const fixedTotal=allTxs.filter(t=>t.subtype==='fixed').reduce((s,t)=>s+t.amount,0);
+  const varTotal=allTxs.filter(t=>t.subtype!=='fixed').reduce((s,t)=>s+t.amount,0);
   const budgetCats=(DB.budgets.monthly||{})[key]||{};
   const budgetTotal=Object.values(budgetCats).reduce((s,v)=>s+v,0);
   const spendTotal=Object.values(spend).reduce((s,v)=>s+v,0);
@@ -937,13 +956,17 @@ function renderBudget(){
     if(pct>=51)return{label:'보통',color:'#6080a0',bg:'#e4edf5'};
     return{label:'여유',color:'#608060',bg:'#e4f0e4'};
   };
+  // 필터에 따라 각 카테고리 표시 (지출 없어도 예산 설정된 카테고리는 표시)
   const rows=expCats.map(cat=>{
-    const b=budgetCats[cat.id]||0;const s=spend[cat.id]||0;
+    const b=budgetCats[cat.id]||0;
+    const s=spend[cat.id]||0;
+    const fAmt=allTxs.filter(t=>t.catId===cat.id&&t.subtype==='fixed').reduce((a,t)=>a+t.amount,0);
+    const vAmt=allTxs.filter(t=>t.catId===cat.id&&t.subtype!=='fixed').reduce((a,t)=>a+t.amount,0);
+    // 필터 모드에서 해당 지출도 없고 예산도 없으면 숨김
+    if(budgetSubFilter!=='all'&&s===0&&!b)return '';
     const rawPct=b?Math.round(s/b*100):0;const pct=Math.min(rawPct,100);const ov=b&&s>b;
     const st=b?getBudgetStatus(rawPct,ov):null;
-    const fAmt=txs.filter(t=>t.catId===cat.id&&t.subtype==='fixed').reduce((a,t)=>a+t.amount,0);
-    const vAmt=txs.filter(t=>t.catId===cat.id&&t.subtype!=='fixed').reduce((a,t)=>a+t.amount,0);
-    const breakdown=(fAmt||vAmt)?`<div style="font-size:10px;color:var(--text3);margin-top:2px;display:flex;gap:8px">${fAmt?`<span>고정 ${fmt(fAmt)}</span>`:''}${vAmt?`<span>변동 ${fmt(vAmt)}</span>`:''}</div>`:'';
+    const breakdown=budgetSubFilter==='all'&&(fAmt||vAmt)?`<div style="font-size:10px;color:var(--text3);margin-top:2px;display:flex;gap:8px">${fAmt?`<span>고정 ${fmt(fAmt)}</span>`:''}${vAmt?`<span>변동 ${fmt(vAmt)}</span>`:''}</div>`:'';
     return`<tr>
       <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span>${breakdown}</td>
       <td style="text-align:right">${b?fmt(b):'<span style="color:var(--text3)">미설정</span>'}</td>
@@ -952,15 +975,16 @@ function renderBudget(){
       <td style="text-align:right">${b?`<span class="${ov?'neg':'pos'}">${fmt(b-s)}</span>`:'-'}</td>
     </tr>`;
   }).join('');
+  const filterLabel=budgetSubFilter==='fixed'?'고정 지출':budgetSubFilter==='variable'?'변동 지출':'전체';
   document.getElementById('budget-content').innerHTML=`
     <div class="mg3" style="margin-bottom:14px">
       <div class="mc"><div class="ml">총 예산</div><div class="mv">${budgetTotal?fmt(budgetTotal):'<span style="font-size:14px;color:var(--text3)">미설정</span>'}</div></div>
-      <div class="mc"><div class="ml">이번달 지출</div><div class="mv neg">${fmt(spendTotal)}</div></div>
+      <div class="mc"><div class="ml">${filterLabel} 지출</div><div class="mv neg">${fmt(spendTotal)}</div></div>
       <div class="mc"><div class="ml">고정 / 변동</div><div class="mv" style="font-size:15px"><span style="color:#a06060">${fmt(fixedTotal)}</span><span style="color:var(--text3);font-size:12px;font-weight:400;margin:0 4px">/</span><span style="color:#6080a0">${fmt(varTotal)}</span></div></div>
     </div>
     <div class="card"><div class="tw"><table class="t">
-      <thead><tr><th>카테고리</th><th style="text-align:right">예산</th><th style="text-align:right">사용</th><th>상태</th><th style="text-align:right">잔여</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <thead><tr><th>카테고리</th><th style="text-align:right">예산</th><th style="text-align:right">${filterLabel} 사용</th><th>상태</th><th style="text-align:right">잔여</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" class="empty" style="padding:1.5rem">해당 지출이 없습니다</td></tr>'}</tbody>
     </table></div></div>`;
 }
 
