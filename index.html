@@ -484,15 +484,24 @@ async function syncFromSheet(manual=false){
     if(json.ok&&json.data){
       DB=json.data;
       if(!DB.budgets)DB.budgets={monthly:{}};
-      // migrate old cats structure
-      if(DB.budgets.cats&&!DB.budgets.monthly){
-        DB.budgets.monthly={};
+      if(!DB.budgets.monthly)DB.budgets.monthly={};
+      // migrate old cats or flat monthly structure → {fixed:{}, variable:{}}
+      if(DB.budgets.cats){
         const today=new Date();
         const key=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
-        DB.budgets.monthly[key]=DB.budgets.cats;
+        if(!DB.budgets.monthly[key])DB.budgets.monthly[key]={fixed:{},variable:{}};
+        DB.budgets.monthly[key].fixed=DB.budgets.cats;
         delete DB.budgets.cats;
       }
-      if(!DB.budgets.monthly)DB.budgets.monthly={};
+      // migrate flat monthly (catId: amt) → {fixed: {catId: amt}, variable: {}}
+      Object.keys(DB.budgets.monthly).forEach(k=>{
+        const m=DB.budgets.monthly[k];
+        if(m&&!m.fixed&&!m.variable){
+          DB.budgets.monthly[k]={fixed:m,variable:{}};
+        }
+        if(!DB.budgets.monthly[k].fixed)DB.budgets.monthly[k].fixed={};
+        if(!DB.budgets.monthly[k].variable)DB.budgets.monthly[k].variable={};
+      });
       if(!DB.cards)DB.cards=[];
       if(!DB.recurring)DB.recurring=[];
       renderAll();
@@ -640,7 +649,10 @@ function renderDashboard(){
   const nowSpend={};
   nowTxs.filter(t=>t.type==='expense').forEach(t=>{nowSpend[t.catId]=(nowSpend[t.catId]||0)+t.amount;});
   const _budgetKey=`${curY}-${pad(curM)}`;
-  Object.entries((DB.budgets.monthly||{})[_budgetKey]||{}).forEach(([cid,b])=>{
+  const _bm=(DB.budgets.monthly||{})[_budgetKey]||{fixed:{},variable:{}};
+  const _allBudget={};
+  DB.categories.forEach(cat=>{const f=(_bm.fixed||{})[cat.id]||0;const v=(_bm.variable||{})[cat.id]||0;if(f+v>0)_allBudget[cat.id]=f+v;});
+  Object.entries(_allBudget).forEach(([cid,b])=>{
     const s=nowSpend[cid]||0;const pct=b?Math.round(s/b*100):0;const cat=getCat(cid);
     if(pct>=100)alerts.push({type:'danger',msg:`🚨 <b>${cat.name}</b> 예산 초과! (${fmt(s)} / ${fmt(b)})`});
     else if(pct>=80)alerts.push({type:'warn',msg:`⚠ <b>${cat.name}</b> 예산 ${pct}% 사용 — 초과 임박`});
@@ -649,7 +661,8 @@ function renderDashboard(){
   if(curY===today.getFullYear()&&curM===today.getMonth()+1){
     const dInM=new Date(curY,curM,0).getDate();const dPassed=today.getDate();
     const _bk=`${curY}-${pad(curM)}`;
-    const totalBudget=Object.values((DB.budgets.monthly||{})[_bk]||{}).reduce((s,v)=>s+v,0);
+    const _bkm=(DB.budgets.monthly||{})[_bk]||{fixed:{},variable:{}};
+    const totalBudget=Object.values(_bkm.fixed||{}).reduce((s,v)=>s+v,0)+Object.values(_bkm.variable||{}).reduce((s,v)=>s+v,0);
     const curE=monthStats(curY,curM).expense;
     if(totalBudget>0&&dPassed>0){
       const proj=Math.round(curE/dPassed*dInM);
@@ -722,7 +735,8 @@ function renderDashboard(){
     const curE=monthStats(curY,curM).expense;
     const projected=dPassed>0?Math.round(curE/dPassed*dInM):0;
     const _pk=`${curY}-${pad(curM)}`;
-    const totalBudget=Object.values((DB.budgets.monthly||{})[_pk]||{}).reduce((s,v)=>s+v,0);
+    const _pkm=(DB.budgets.monthly||{})[_pk]||{fixed:{},variable:{}};
+    const totalBudget=Object.values(_pkm.fixed||{}).reduce((s,v)=>s+v,0)+Object.values(_pkm.variable||{}).reduce((s,v)=>s+v,0);
     const pct=dInM>0?Math.round(dPassed/dInM*100):0;
     const budgetLine=totalBudget?`예산 <b>${fmt(totalBudget)}</b> 대비 예상 <span class="${projected>totalBudget?'neg':'pos'}">${projected>totalBudget?'초과':'여유'}</span>`:'예산 미설정';
     paceEl.innerHTML=`<div style="background:linear-gradient(135deg,#f8f4ff,#ede8fb);border:1px solid #d4c8f4;border-radius:var(--rl);padding:14px 18px;margin-bottom:12px">
@@ -947,7 +961,13 @@ function renderBudget(){
   const spend={};txs.forEach(t=>{spend[t.catId]=(spend[t.catId]||0)+t.amount;});
   const fixedTotal=allTxs.filter(t=>t.subtype==='fixed').reduce((s,t)=>s+t.amount,0);
   const varTotal=allTxs.filter(t=>t.subtype!=='fixed').reduce((s,t)=>s+t.amount,0);
-  const budgetCats=(DB.budgets.monthly||{})[key]||{};
+  const budgetMonth=(DB.budgets.monthly||{})[key]||{fixed:{},variable:{}};
+  const budgetFixed=budgetMonth.fixed||{};
+  const budgetVar=budgetMonth.variable||{};
+  const budgetCats={}; // 합계용
+  DB.categories.filter(c=>c.type==='expense').forEach(cat=>{
+    budgetCats[cat.id]=(budgetFixed[cat.id]||0)+(budgetVar[cat.id]||0);
+  });
   const budgetTotal=Object.values(budgetCats).reduce((s,v)=>s+v,0);
   const spendTotal=Object.values(spend).reduce((s,v)=>s+v,0);
   const getBudgetStatus=(pct,over)=>{
@@ -958,15 +978,18 @@ function renderBudget(){
   };
   // 필터에 따라 각 카테고리 표시 (지출 없어도 예산 설정된 카테고리는 표시)
   const rows=expCats.map(cat=>{
-    const b=budgetCats[cat.id]||0;
+    const bFixed=budgetFixed[cat.id]||0;
+    const bVar=budgetVar[cat.id]||0;
+    const b=budgetSubFilter==='fixed'?bFixed:budgetSubFilter==='variable'?bVar:(bFixed+bVar);
     const s=spend[cat.id]||0;
     const fAmt=allTxs.filter(t=>t.catId===cat.id&&t.subtype==='fixed').reduce((a,t)=>a+t.amount,0);
     const vAmt=allTxs.filter(t=>t.catId===cat.id&&t.subtype!=='fixed').reduce((a,t)=>a+t.amount,0);
-    // 필터 모드에서 해당 지출도 없고 예산도 없으면 숨김
     if(budgetSubFilter!=='all'&&s===0&&!b)return '';
     const rawPct=b?Math.round(s/b*100):0;const pct=Math.min(rawPct,100);const ov=b&&s>b;
     const st=b?getBudgetStatus(rawPct,ov):null;
-    const breakdown=budgetSubFilter==='all'&&(fAmt||vAmt)?`<div style="font-size:10px;color:var(--text3);margin-top:2px;display:flex;gap:8px">${fAmt?`<span>고정 ${fmt(fAmt)}</span>`:''}${vAmt?`<span>변동 ${fmt(vAmt)}</span>`:''}</div>`:'';
+    const budgetBreakdown=(bFixed||bVar)?`<div style="font-size:10px;color:var(--text3);margin-top:1px;display:flex;gap:8px">${bFixed?`<span>고정예산 ${fmt(bFixed)}</span>`:''}${bVar?`<span>변동예산 ${fmt(bVar)}</span>`:''}</div>`:'';
+    const spendBreakdown=budgetSubFilter==='all'&&(fAmt||vAmt)?`<div style="font-size:10px;color:var(--text3);margin-top:1px;display:flex;gap:8px">${fAmt?`<span>고정지출 ${fmt(fAmt)}</span>`:''}${vAmt?`<span>변동지출 ${fmt(vAmt)}</span>`:''}</div>`:'';
+    const breakdown=budgetBreakdown+spendBreakdown;
     return`<tr>
       <td><span class="badge" style="background:${cat.color}44;color:#333">${cat.name}</span>${breakdown}</td>
       <td style="text-align:right">${b?fmt(b):'<span style="color:var(--text3)">미설정</span>'}</td>
@@ -1376,24 +1399,36 @@ function openBudgetModal(targetKey){
   const key=targetKey||`${curY}-${pad(curM)}`;
   document.getElementById('modal-title').textContent='예산 설정';
   const expCats=DB.categories.filter(c=>c.type==='expense');
-  const budgetCats=(DB.budgets.monthly||{})[key]||{};
-  // 최근 6개월 + 다음 2개월 목록
+  const budgetMonth=(DB.budgets.monthly||{})[key]||{fixed:{},variable:{}};
+  const bFixed=budgetMonth.fixed||{};
+  const bVar=budgetMonth.variable||{};
   const monthOpts=[];
   for(let i=5;i>=-2;i--){let y=curY,m=curM-i;while(m<1){m+=12;y--;}while(m>12){m-=12;y++;}monthOpts.push(`${y}-${pad(m)}`);}
   const monthSel=monthOpts.map(mk=>`<option value="${mk}"${mk===key?' selected':''}>${mk}</option>`).join('');
+  const catRows=expCats.map(cat=>`
+    <div style="padding:9px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:center">
+      <div style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <span style="width:8px;height:8px;border-radius:50%;background:${cat.color};display:inline-block;flex-shrink:0"></span>${cat.name}
+      </div>
+      <div class="fg" style="gap:3px"><label style="font-size:10px">고정 예산</label>
+        <input type="number" id="bf-${cat.id}" value="${bFixed[cat.id]||''}" placeholder="미설정" min="0" step="10000" style="font-size:12px;padding:6px 8px">
+      </div>
+      <div class="fg" style="gap:3px"><label style="font-size:10px">변동 예산</label>
+        <input type="number" id="bv-${cat.id}" value="${bVar[cat.id]||''}" placeholder="미설정" min="0" step="10000" style="font-size:12px;padding:6px 8px">
+      </div>
+    </div>`).join('');
   document.getElementById('modal-body').innerHTML=`
     <div class="fg" style="margin-bottom:14px">
       <label>예산 설정 월</label>
       <select id="budget-month-sel" onchange="openBudgetModal(this.value)">${monthSel}</select>
     </div>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px">
-      <b>${key}</b> 예산을 설정하세요. 다른 달은 위에서 선택하세요.
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:4px;padding:0 0 6px;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:500;color:var(--text2)">카테고리</div>
+      <div style="font-size:11px;font-weight:500;color:var(--text2)">고정 예산</div>
+      <div style="font-size:11px;font-weight:500;color:var(--text2)">변동 예산</div>
     </div>
-    ${expCats.map(cat=>`<div class="fg" style="margin-bottom:10px">
-      <label><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${cat.color};margin-right:6px"></span>${cat.name}</label>
-      <input type="number" id="bc-${cat.id}" value="${budgetCats[cat.id]||''}" placeholder="미설정" min="0" step="10000">
-    </div>`).join('')}
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+    ${catRows}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button class="btn" onclick="closeModal()">취소</button>
       <button class="btn btn-primary" onclick="saveBudget('${key}')">✓ 저장</button>
     </div>`;
@@ -1402,12 +1437,16 @@ function openBudgetModal(targetKey){
 function saveBudget(key){
   const k=key||`${curY}-${pad(curM)}`;
   if(!DB.budgets.monthly)DB.budgets.monthly={};
-  if(!DB.budgets.monthly[k])DB.budgets.monthly[k]={};
-  DB.categories.filter(c=>c.type==='expense').forEach(cat=>{
-    const v=parseFloat(document.getElementById('bc-'+cat.id)?.value);
-    if(v>0)DB.budgets.monthly[k][cat.id]=v;else delete DB.budgets.monthly[k][cat.id];
-    if(Object.keys(DB.budgets.monthly[k]).length===0)delete DB.budgets.monthly[k];
+  if(!DB.budgets.monthly[k])DB.budgets.monthly[k]={fixed:{},variable:{}};
+  const expCats=DB.categories.filter(c=>c.type==='expense');
+  expCats.forEach(cat=>{
+    const fv=parseFloat(document.getElementById('bf-'+cat.id)?.value);
+    const vv=parseFloat(document.getElementById('bv-'+cat.id)?.value);
+    if(fv>0)DB.budgets.monthly[k].fixed[cat.id]=fv;else delete DB.budgets.monthly[k].fixed[cat.id];
+    if(vv>0)DB.budgets.monthly[k].variable[cat.id]=vv;else delete DB.budgets.monthly[k].variable[cat.id];
   });
+  if(!Object.keys(DB.budgets.monthly[k].fixed).length&&!Object.keys(DB.budgets.monthly[k].variable).length)
+    delete DB.budgets.monthly[k];
   save();closeModal();renderBudget();showToast(`${k} 예산을 저장했습니다`);
 }
 
